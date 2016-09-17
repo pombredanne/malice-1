@@ -3,86 +3,87 @@ package plugins
 import (
 	"bytes"
 	"fmt"
+	"sync"
 
 	"os"
 
 	"github.com/BurntSushi/toml"
 	log "github.com/Sirupsen/logrus"
-	"github.com/docker/engine-api/types"
+	runconfigopts "github.com/docker/docker/runconfig/opts"
 	"github.com/docker/engine-api/types/strslice"
 	"github.com/maliceio/malice/config"
+	"github.com/maliceio/malice/malice/docker/client"
+	"github.com/maliceio/malice/malice/docker/client/container"
+	"github.com/maliceio/malice/malice/docker/client/image"
 	er "github.com/maliceio/malice/malice/errors"
-	"github.com/maliceio/malice/malice/maldocker"
 	"github.com/parnurzeal/gorequest"
 )
 
 // StartPlugin starts plugin
-func (plugin Plugin) StartPlugin(client *maldocker.Docker, sample string, logs bool) (types.ContainerJSONBase, error) {
+func (plugin Plugin) StartPlugin(docker *client.Docker, arg string, scanID string, logs bool, wg *sync.WaitGroup) {
 
+	defer wg.Done()
+
+	cmd := plugin.buildCmd(arg, logs)
 	binds := []string{config.Conf.Docker.Binds}
 	env := plugin.getPluginEnv()
 
-	contJSON, err := client.StartContainer(
-		strslice.StrSlice{"-t", sample},
+	env = append(env, "MALICE_SCANID="+scanID)
+
+	contJSON, err := container.Start(
+		// err := container.Run(
+		docker,
+		cmd, //strslice.StrSlice{"-t", plugin.Cmd, arg},
 		plugin.Name,
 		plugin.Image,
 		logs,
 		binds,
 		nil,
-		[]string{"rethink:rethink"},
+		[]string{"rethink"},
 		env,
 	)
-	er.CheckError(err)
+	log.WithFields(log.Fields{
+		"name": contJSON.Name,
+		"env":  config.Conf.Environment.Run,
+	}).Debug("Plugin Container Started")
 
-	return contJSON, err
+	defer func() {
+		er.CheckError(container.Remove(docker, contJSON.ID, true, false, true))
+		log.WithFields(log.Fields{
+			"name": contJSON.Name,
+			"env":  config.Conf.Environment.Run,
+		}).Debug("Plugin Container Removed")
+	}()
+
+	er.CheckError(err)
+}
+
+func (plugin Plugin) buildCmd(args string, logs bool) strslice.StrSlice {
+
+	cmdStr := strslice.StrSlice{}
+	if logs {
+		cmdStr = append(cmdStr, "-t")
+	}
+	if plugin.Cmd != "" {
+		cmdStr = append(cmdStr, plugin.Cmd)
+	}
+	cmdStr = append(cmdStr, args)
+
+	return cmdStr
 }
 
 // RunIntelPlugins run all Intel plugins
-func RunIntelPlugins(client *maldocker.Docker, hash string, scanID string, logs bool) {
-	var cont types.ContainerJSONBase
-	var err error
-	for _, plugin := range GetIntelPlugins(true) {
+func RunIntelPlugins(docker *client.Docker, hash string, scanID string, logs bool) {
 
-		env := plugin.getPluginEnv()
-		env = append(env, "MALICE_SCANID="+scanID)
+	intelPlugins := GetIntelPlugins(true)
 
-		if plugin.Cmd != "" {
-			cont, err = client.StartContainer(
-				strslice.StrSlice{"-t", plugin.Cmd, hash},
-				plugin.Name,
-				plugin.Image,
-				logs,
-				nil,
-				nil,
-				[]string{"rethink:rethink"},
-				env,
-			)
-			er.CheckError(err)
-		} else {
-			cont, err = client.StartContainer(
-				strslice.StrSlice{"-t", hash},
-				plugin.Name,
-				plugin.Image,
-				logs,
-				nil,
-				nil,
-				[]string{"rethink:rethink"},
-				env,
-			)
-			er.CheckError(err)
-		}
+	var wg sync.WaitGroup
+	wg.Add(len(intelPlugins))
 
-		log.WithFields(log.Fields{
-			"id": cont.ID,
-			"ip": client.GetIP(),
-			// "url":      "http://" + maldocker.GetIP(),
-			"name": cont.Name,
-			"env":  config.Conf.Environment.Run,
-		}).Debug("Plugin Container Started")
-
-		err := client.RemoveContainer(cont, false, false, false)
-		er.CheckError(err)
+	for _, plugin := range intelPlugins {
+		go plugin.StartPlugin(docker, hash, scanID, logs, &wg)
 	}
+	wg.Wait()
 }
 
 func (plugin *Plugin) getPluginEnv() []string {
@@ -142,9 +143,9 @@ func InstallPlugin(plugin *Plugin) (err error) {
 }
 
 // InstalledPluginsCheck checks that all enabled plugins are installed
-func InstalledPluginsCheck(client *maldocker.Docker) bool {
+func InstalledPluginsCheck(docker *client.Docker) bool {
 	for _, plugin := range getEnabled(Plugs.Plugins) {
-		if _, exists, _ := client.ImageExists(plugin.Image); !exists {
+		if _, exists, _ := image.Exists(docker, plugin.Image); !exists {
 			return false
 		}
 	}
@@ -152,15 +153,52 @@ func InstalledPluginsCheck(client *maldocker.Docker) bool {
 }
 
 // UpdatePlugin performs a docker pull on all registered plugins checking for updates
-func (plugin Plugin) UpdatePlugin(client *maldocker.Docker) {
-	client.PullImage(plugin.Image, "latest")
+func (plugin Plugin) UpdatePlugin(docker *client.Docker) {
+	image.Pull(docker, plugin.Image, "latest")
+}
+
+// UpdatePluginFromRepository performs a docker build on a plugins remote repository
+func (plugin Plugin) UpdatePluginFromRepository(docker *client.Docker) {
+
+	log.Info("[Building Plugin from Source] ===> ", plugin.Name)
+
+	var buildArgs map[string]string
+	var quiet = false
+
+	tags := []string{"malice/" + plugin.Name + ":latest"}
+
+	if config.Conf.Proxy.Enable {
+		buildArgs = runconfigopts.ConvertKVStringsToMap([]string{
+			"HTTP_PROXY=" + config.Conf.Proxy.HTTP,
+			"HTTPS_PROXY=" + config.Conf.Proxy.HTTPS,
+		})
+	} else {
+		buildArgs = nil
+	}
+
+	labels := runconfigopts.ConvertKVStringsToMap([]string{"io.malice.plugin.installed.from=repository"})
+
+	image.Build(docker, plugin.Repository, tags, buildArgs, labels, quiet)
 }
 
 // UpdateAllPlugins performs a docker pull on all registered plugins checking for updates
-func UpdateAllPlugins(client *maldocker.Docker) {
+func UpdateAllPlugins(docker *client.Docker) {
 	plugins := Plugs.Plugins
 	for _, plugin := range plugins {
 		fmt.Println("[Updating Plugin] ===> ", plugin.Name)
-		client.PullImage(plugin.Image, "latest")
+		if plugin.Build {
+			plugin.UpdatePluginFromRepository(docker)
+		} else {
+			image.Pull(docker, plugin.Image, "latest")
+		}
+	}
+}
+
+// UpdateAllPluginsFromSource performs a docker build on a plugins remote repository on all registered plugins
+func UpdateAllPluginsFromSource(docker *client.Docker) {
+	plugins := Plugs.Plugins
+	for _, plugin := range plugins {
+		fmt.Println("[Updating Plugin from Source] ===> ", plugin.Name)
+		plugin.UpdatePluginFromRepository(docker)
 	}
 }

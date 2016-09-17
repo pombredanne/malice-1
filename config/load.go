@@ -3,13 +3,11 @@ package config
 import (
 	"io/ioutil"
 	"os"
-	"time"
-
 	"path"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	log "github.com/Sirupsen/logrus"
-	"github.com/maliceio/malice/data"
 	er "github.com/maliceio/malice/malice/errors"
 	"github.com/maliceio/malice/malice/maldirs"
 )
@@ -85,19 +83,42 @@ var Conf Configuration
 
 // Load config.toml into Conf var
 func Load() {
-	// Get the config file
-	configPath := "./data/config.toml"
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		// er.CheckErrorNoStackWithMessage(err, "NOT FOUND")
-		configPath = path.Join(maldirs.GetBaseDir(), "./config.toml")
-		if _, err := os.Stat(configPath); os.IsNotExist(err) {
-			configData, err := data.Asset("data/config.toml")
-			er.CheckError(err)
-			er.CheckError(ioutil.WriteFile(configPath, configData, 0644))
-		}
+	// Try to load config from
+	// - git repo folder      : MALICE_ROOT/config/config.toml
+	// - .malice folder       : $HOME/.malice/config.toml
+	// - binary embedded file : bindata
+
+	// Check for config config in repo
+	if _, err := os.Stat("./config/config.toml"); err == nil {
+		log.Debug("Malice config loaded from ./config/config.toml")
+
+		_, err := toml.DecodeFile("./config/config.toml", &Conf)
+		er.CheckError(err)
+
+		return
 	}
-	log.Debug("Malice Config: ", configPath)
-	_, err := toml.DecodeFile(configPath, &Conf)
+	// Check for config config in .malice folder
+	if _, err := os.Stat(path.Join(maldirs.GetBaseDir(), "./config.toml")); err == nil {
+		homeConfigDir := path.Join(maldirs.GetBaseDir(), "./config.toml")
+		log.Debug("Malice config loaded from ", homeConfigDir)
+
+		_, err := toml.DecodeFile(homeConfigDir, &Conf)
+		er.CheckError(err)
+
+		return
+	}
+	// Read plugin config out of bindata
+	tomlData, err := Asset("config/config.toml")
+	if err != nil {
+		log.Error(err)
+	}
+
+	if _, err := toml.Decode(string(tomlData), &Conf); err == nil {
+		log.Debug("Malice config loaded from config/bindata.go")
+		configPath := path.Join(maldirs.GetBaseDir(), "./config.toml")
+		er.CheckError(ioutil.WriteFile(configPath, tomlData, 0644))
+	}
 	er.CheckError(err)
-	// fmt.Println(Conf)
+
+	return
 }

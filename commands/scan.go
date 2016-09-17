@@ -3,40 +3,52 @@ package commands
 import (
 	"fmt"
 	"os"
-
-	"golang.org/x/net/context"
+	"sync"
 
 	log "github.com/Sirupsen/logrus"
-	"github.com/maliceio/malice/config"
 	"github.com/maliceio/malice/malice/database"
+	"github.com/maliceio/malice/malice/docker/client"
+	"github.com/maliceio/malice/malice/docker/client/container"
 	er "github.com/maliceio/malice/malice/errors"
-	"github.com/maliceio/malice/malice/maldocker"
 	"github.com/maliceio/malice/malice/persist"
 	"github.com/maliceio/malice/plugins"
 	"github.com/maliceio/malice/utils"
 )
 
 func cmdScan(path string, logs bool) error {
+
+	ScanSample(path)
+
+	return nil
+}
+
+// APIScan is an API wrapper for cmdScan
+func APIScan(file string) error {
+	return cmdScan(file, false)
+}
+
+// ScanSample scans a sample with all appropreiate malice plugins
+func ScanSample(path string) {
 	if len(path) > 0 {
 		// Check that file exists
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			log.Fatal(path + ": no such file or directory")
 		}
 
-		docker := maldocker.NewDockerClient()
+		docker := client.NewDockerClient()
 
 		// Check that RethinkDB is running
-		if _, running, _ := docker.ContainerRunning("rethink"); !running {
+		if _, running, _ := container.Running(docker, "rethink"); !running {
 			log.Error("RethinkDB is NOT running, starting now...")
-			rethink, err := docker.StartRethinkDB(false)
+			rethink, err := container.StartRethinkDB(docker, false)
 			er.CheckError(err)
-			rInfo, err := docker.Client.ContainerInspect(context.Background(), rethink.ID)
+			rInfo, err := container.Inspect(docker, rethink.ID)
 			er.CheckError(err)
 			er.CheckError(database.TestConnection(rInfo.NetworkSettings.IPAddress))
 		}
 
 		// Setup rethinkDB
-		rInfo, err := docker.Client.ContainerInspect(context.Background(), "rethink")
+		rInfo, err := container.Inspect(docker, "rethink")
 		er.CheckError(err)
 		er.CheckError(database.TestConnection(rInfo.NetworkSettings.IPAddress))
 		database.InitRethinkDB()
@@ -59,12 +71,17 @@ func cmdScan(path string, logs bool) error {
 		// fmt.Println(string(file.ToJSON()))
 
 		//////////////////////////////////////
+		// Copy file to malice volume
+		container.CopyToVolume(docker, file)
+
+		//////////////////////////////////////
 		// Write all file data to the Database
 		resp := database.WriteFileToDatabase(file)
-		// os.Exit(0)
+		scanID := resp.GeneratedKeys[0]
+
 		/////////////////////////////////////////////////////////////////
 		// Run all Intel Plugins on the md5 hash associated with the file
-		plugins.RunIntelPlugins(docker, file.MD5, resp.GeneratedKeys[0], true)
+		plugins.RunIntelPlugins(docker, file.MD5, scanID, true)
 
 		log.Debug("Looking for plugins that will run on: ", file.Mime)
 		// Iterate over all applicable installed plugins
@@ -74,40 +91,19 @@ func cmdScan(path string, logs bool) error {
 			log.Debugf(" - %v", plugin.Name)
 		}
 
+		var wg sync.WaitGroup
+		wg.Add(len(plugins))
+
 		for _, plugin := range plugins {
 			log.Debugf(">>>>> RUNNING Plugin: %s >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>", plugin.Name)
-			// go func() {
 			// Start Plugin Container
 			// TODO: don't use the default of true for --logs
-			cont, err := plugin.StartPlugin(docker, file.SHA256, true)
-			er.CheckError(err)
-
-			log.WithFields(log.Fields{
-				"id": cont.ID,
-				"ip": docker.GetIP(),
-				// "url":      "http://" + maldocker.GetIP(),
-				"name": cont.Name,
-				"env":  config.Conf.Environment.Run,
-			}).Debug("Plugin Container Started")
-
-			err = docker.RemoveContainer(cont, false, false, false)
-			er.CheckError(err)
-
-			// }()
-			// Clean up the Plugin Container
-			// TODO: I want to reuse these containers for speed eventually.
-
-			// time.Sleep(10 * time.Millisecond)
+			go plugin.StartPlugin(docker, file.SHA256, scanID, true, &wg)
 		}
-		// time.Sleep(60 * time.Second)
+
+		wg.Wait() // this waits for the counter to be 0
 		log.Debug("Done with plugins.")
 	} else {
 		log.Error("Please supply a valid file to scan.")
 	}
-	return nil
-}
-
-// APIScan is an API wrapper for cmdScan
-func APIScan(file string) error {
-	return cmdScan(file, false)
 }

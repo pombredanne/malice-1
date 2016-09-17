@@ -4,14 +4,22 @@ VERSION=0.1.0-alpha
 
 all: deps test validate
 
-build:
-	# mkdir -p build/Linux  && GOOS=linux  go build -ldflags "-X main.Version=$(VERSION)" -o build/Linux/$(NAME)
+bindata:
+	rm -f config/bindata.go plugins/bindata.go
+	go-bindata -pkg config -ignore=load.go config/...
+	mv bindata.go config/bindata.go
+	go-bindata -pkg plugins -ignore="^.*.go" plugins/...
+	mv bindata.go plugins/bindata.go
+
+build: bindata
+	mkdir -p build/Linux  && GOOS=linux  go build -ldflags "-X main.Version=$(VERSION)" -o build/Linux/$(NAME)
 	mkdir -p build/Darwin && GOOS=darwin go build -ldflags "-X main.Version=$(VERSION)" -o build/Darwin/$(NAME)
 
 deps:
 	go get -u github.com/progrium/gh-release/...
 	go get -u -f github.com/tools/godep
 	go get github.com/golang/lint/golint
+	go get -u github.com/jteeuwen/go-bindata/...
 	go get -t ./... || true
 
 test:
@@ -30,7 +38,7 @@ lint:
 
 release: build
 	rm -rf release && mkdir release
-	# tar -zcf release/$(NAME)_$(VERSION)_linux_$(ARCH).tgz -C build/Linux $(NAME)
+	tar -zcf release/$(NAME)_$(VERSION)_linux_$(ARCH).tgz -C build/Linux $(NAME)
 	tar -zcf release/$(NAME)_$(VERSION)_darwin_$(ARCH).tgz -C build/Darwin $(NAME)
 	gh-release create maliceio/$(NAME) $(VERSION) $(shell git rev-parse --abbrev-ref HEAD) v$(VERSION)
 

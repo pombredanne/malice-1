@@ -25,6 +25,18 @@ var Commands = []cli.Command{
 		Action: func(c *cli.Context) error { return cmdScan(c.Args().First(), c.Bool("logs")) },
 	},
 	{
+		Name:        "watch",
+		Usage:       "Watch a folder",
+		Description: "Folder to be watched.",
+		Flags: []cli.Flag{
+			cli.BoolFlag{
+				Name:  "logs",
+				Usage: "Display the Logs of the Plugin containers",
+			},
+		},
+		Action: func(c *cli.Context) error { return cmdWatch(c.Args().First(), c.Bool("logs")) },
+	},
+	{
 		Name:        "lookup",
 		Usage:       "Look up a file hash",
 		Description: "Hash to be queried.",
@@ -117,8 +129,12 @@ var Commands = []cli.Command{
 						Name:  "all",
 						Usage: "update all installed plugins",
 					},
+					cli.BoolFlag{
+						Name:  "s,source",
+						Usage: "update plugin from source repo",
+					},
 				},
-				Action: func(c *cli.Context) error { return cmdUpdatePlugin(c.Args().First(), c.Bool("all")) },
+				Action: func(c *cli.Context) error { return cmdUpdatePlugin(c.Args().First(), c.Bool("all"), c.Bool("source")) },
 			},
 		},
 		BashComplete: func(c *cli.Context) {

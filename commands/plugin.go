@@ -4,7 +4,7 @@ import (
 	"os"
 
 	log "github.com/Sirupsen/logrus"
-	"github.com/maliceio/malice/malice/maldocker"
+	"github.com/maliceio/malice/malice/docker/client"
 	"github.com/maliceio/malice/plugins"
 )
 
@@ -14,6 +14,15 @@ func cmdListPlugins(all bool, detail bool) error {
 	} else {
 		plugins.ListEnabledPlugins(detail)
 	}
+
+	// TODO: Add ability to list malice plugins not installed
+
+	// docker := client.NewDockerClient()
+	// err := docker.SearchImages("malice")
+	// if err != nil {
+	// 	log.Fatal(err)
+	// }
+
 	// enabled := plugins.GetEnabledPlugins()
 	// fmt.Println(enabled)
 	return nil
@@ -38,8 +47,8 @@ func cmdRemovePlugin() error {
 	return nil
 }
 
-func cmdUpdatePlugin(name string, all bool) error {
-	docker := maldocker.NewDockerClient()
+func cmdUpdatePlugin(name string, all bool, source bool) error {
+	docker := client.NewDockerClient()
 	if all {
 		plugins.UpdateAllPlugins(docker)
 	} else {
@@ -47,7 +56,11 @@ func cmdUpdatePlugin(name string, all bool) error {
 			log.Error("Please enter a valid plugin name.")
 			os.Exit(1)
 		}
-		plugins.GetPluginByName(name).UpdatePlugin(docker)
+		if source {
+			plugins.GetPluginByName(name).UpdatePluginFromRepository(docker)
+		} else {
+			plugins.GetPluginByName(name).UpdatePlugin(docker)
+		}
 	}
 	return nil
 }

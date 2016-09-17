@@ -2,6 +2,7 @@ package database
 
 import (
 	"fmt"
+	"io/ioutil"
 	"os"
 	"time"
 
@@ -14,6 +15,10 @@ import (
 
 // RethinkAddr RethinkDB address to user for connections
 var RethinkAddr string
+
+func init() {
+	r.Log.Out = ioutil.Discard
+}
 
 func getopt(name, dfault string) string {
 	value := os.Getenv(name)
@@ -143,8 +148,7 @@ func WriteFileToDatabase(sample persist.File) r.WriteResponse {
 		}).Run(session)
 		assert(err)
 		defer res.Close()
-
-		// Scan query result into the person variable
+		
 		var samples []interface{}
 		err = res.All(&samples)
 		if err != nil {

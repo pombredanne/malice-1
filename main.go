@@ -3,12 +3,14 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"strconv"
 
 	log "github.com/Sirupsen/logrus"
 	"github.com/urfave/cli"
 
 	"github.com/maliceio/malice/commands"
+	"github.com/maliceio/malice/config"
 	er "github.com/maliceio/malice/malice/errors"
 	"github.com/maliceio/malice/malice/logger"
 	"github.com/maliceio/malice/plugins"
@@ -16,9 +18,9 @@ import (
 )
 
 func init() {
-	// config.Load()
 	logger.Init()
 	setDebugOutputLevel()
+	config.Load()
 	plugins.Load()
 }
 
@@ -46,6 +48,9 @@ func setDebugOutputLevel() {
 func Init() {}
 
 func main() {
+	log.Debugf("Using %d PROCS", runtime.NumCPU())
+	runtime.GOMAXPROCS(runtime.NumCPU())
+
 	Init()
 	// setDebugOutputLevel()
 	cli.AppHelpTemplate = commands.AppHelpTemplate
